@@ -50,6 +50,8 @@ def validar(p):
     d0, d1 = _fecha(p['desde'], 'desde'), _fecha(p['hasta'], 'hasta')
     if d0 > d1:
         raise ErrorConCodigo(400, 'la fecha inicial es posterior a la final')
+    if d0 > dt.date.today():
+        raise ErrorConCodigo(400, 'la fecha inicial todavía no llega: no hay imágenes de días futuros')
     if d1 < dt.date(2017, 3, 28):
         raise ErrorConCodigo(400, 'Sentinel-2 L2A en Planetary Computer empieza en 2017')
     if p['sur'] >= p['norte'] or p['oeste'] >= p['este']:

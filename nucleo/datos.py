@@ -117,10 +117,16 @@ def _por_escena(c, nombre, n, defecto):
 def adquirir_tesela(t, desde, hasta, bandas, nubes_max, max_escenas):
     import cubo
     T = config.LADO_TESELA_PX
-    c = cubo.create(lat=t['lat'], lon=t['lon'], collection=config.COLECCION_S2,
-                    bands=list(bandas) + ['SCL'], start_date=desde, end_date=hasta,
-                    edge_size=T, resolution=config.RESOLUCION_M,
-                    query={'eo:cloud_cover': {'lt': float(nubes_max)}})
+    try:
+        c = cubo.create(lat=t['lat'], lon=t['lon'], collection=config.COLECCION_S2,
+                        bands=list(bandas) + ['SCL'], start_date=desde, end_date=hasta,
+                        edge_size=T, resolution=config.RESOLUCION_M,
+                        query={'eo:cloud_cover': {'lt': float(nubes_max)}})
+    except ValueError as e:
+        # cubo avisa así cuando la búsqueda no encuentra escenas: esa tesela queda sin datos
+        if 'No items' in str(e):
+            return None
+        raise
     if c.sizes.get('time', 0) == 0:
         return None
     nubes = _por_escena(c, 'eo:cloud_cover', c.sizes['time'], 0.0).astype(float)
