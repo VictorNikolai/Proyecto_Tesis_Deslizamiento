@@ -100,6 +100,20 @@ def _vec(v):
     return np.atleast_1d(np.asarray(v))
 
 
+def _por_escena(c, nombre, n, defecto):
+    """Un valor por escena de una coordenada de cubo. Cuando todas las escenas
+    comparten el valor (p. ej. la misma processing_baseline, como en 2026),
+    stackstac la deja como un escalar: se repite para cada escena."""
+    if nombre not in c.coords:
+        return np.array([defecto] * n, dtype=object)
+    v = _vec(c[nombre].values)
+    if v.size == n:
+        return v
+    if v.size == 1:
+        return np.repeat(v, n)
+    raise DatosInvalidos(f'la coordenada {nombre} trae {v.size} valores para {n} escenas')
+
+
 def adquirir_tesela(t, desde, hasta, bandas, nubes_max, max_escenas):
     import cubo
     T = config.LADO_TESELA_PX
@@ -109,7 +123,7 @@ def adquirir_tesela(t, desde, hasta, bandas, nubes_max, max_escenas):
                     query={'eo:cloud_cover': {'lt': float(nubes_max)}})
     if c.sizes.get('time', 0) == 0:
         return None
-    nubes = _vec(c['eo:cloud_cover'].values).astype(float)
+    nubes = _por_escena(c, 'eo:cloud_cover', c.sizes['time'], 0.0).astype(float)
     orden = np.argsort(nubes)[:max_escenas]
     c = c.isel(time=np.sort(orden))
     with _dask_acotado():
@@ -117,8 +131,7 @@ def adquirir_tesela(t, desde, hasta, bandas, nubes_max, max_escenas):
     if a.ndim == 3:
         a = a[None]
     nb = len(bandas)
-    base = _vec(c['s2:processing_baseline'].values) if 's2:processing_baseline' in c.coords \
-        else np.array(['00.00'] * a.shape[0])
+    base = _por_escena(c, 's2:processing_baseline', a.shape[0], '00.00')
     for i in range(a.shape[0]):
         try:
             b = float(str(base[i]))
@@ -134,9 +147,9 @@ def adquirir_tesela(t, desde, hasta, bandas, nubes_max, max_escenas):
         comp = np.nanmedian(bandas_t, axis=0)                # (b, y, x)
     n_ok = ok.sum(axis=0)
     fechas = [str(x)[:10] for x in _vec(c.time.values)]
-    ids = [str(x) for x in _vec(c['id'].values)] if 'id' in c.coords else [''] * len(fechas)
-    plat = _vec(c['platform'].values) if 'platform' in c.coords else [''] * len(fechas)
-    nub = _vec(c['eo:cloud_cover'].values).astype(float)
+    ids = [str(x) for x in _por_escena(c, 'id', len(fechas), '')]
+    plat = _por_escena(c, 'platform', len(fechas), '')
+    nub = _por_escena(c, 'eo:cloud_cover', len(fechas), 0.0).astype(float)
     return {'bandas': {b: comp[i] for i, b in enumerate(bandas)}, 'n_validas': n_ok,
             'x0': float(_vec(c.x.values)[0]), 'y0': float(_vec(c.y.values)[0]),
             'epsg': int(c.attrs.get('epsg', 0)),
