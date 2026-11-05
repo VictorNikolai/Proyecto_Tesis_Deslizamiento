@@ -11,10 +11,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.8"
-      # Pon aquí la URL exacta de tu Space (https://usuario-espacio.hf.space).
-      # Con * cualquier página puede llamar a la API; sirve solo para probar.
+      # Dirección del Space que puede llamar a la API (sin barra final).
       - key: ORIGENES_PERMITIDOS
-        value: "*"
+        value: "https://nikolaivictor-deslizamientos-laconvencion.static.hf.space"
       # Si los .onnx llegan como punteros de Git LFS, se bajan de aquí.
       # Formato: https://media.githubusercontent.com/media/USUARIO/REPO/main/modelos
       - key: URL_PESOS_BASE
