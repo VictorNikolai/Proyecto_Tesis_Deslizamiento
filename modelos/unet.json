@@ -1,0 +1,146 @@
+{
+ "nombre": "unet",
+ "etiqueta": "U-Net · resnet34",
+ "autor": "Mejía López, L. C.",
+ "onnx": "unet.onnx",
+ "canales": [
+  "B01",
+  "B02",
+  "B03",
+  "B04",
+  "pendiente",
+  "elevacion"
+ ],
+ "lado_px": 128,
+ "normalizacion": {
+  "metodo": "media_desv",
+  "percentiles": [
+   2,
+   98
+  ],
+  "canales": [
+   "B01",
+   "B02",
+   "B03",
+   "B04",
+   "pendiente",
+   "elevacion"
+  ],
+  "por_canal": {
+   "B01": {
+    "media": 0.925704,
+    "desv": 0.140988
+   },
+   "B02": {
+    "media": 0.922701,
+    "desv": 0.220698
+   },
+   "B03": {
+    "media": 0.954109,
+    "desv": 0.318425
+   },
+   "B04": {
+    "media": 0.959639,
+    "desv": 0.572375
+   },
+   "pendiente": {
+    "media": 1.251108,
+    "desv": 0.678369
+   },
+   "elevacion": {
+    "media": 1.649543,
+    "desv": 1.072711
+   }
+  },
+  "nota": "constantes en unidades de Landslide4Sense; los índices NDVI y NDWI se calculan sobre esas unidades y no se normalizan"
+ },
+ "salida": "sigmoide",
+ "umbral": 0.7,
+ "entrenamiento": {
+  "firma": "c4a0d3781a67",
+  "arquitectura": "unet",
+  "codificador": "resnet34",
+  "dataset": "Landslide4Sense (ibm-nasa-geospatial/Landslide4sense, conjuntos oficiales)",
+  "epoca": 16,
+  "iou_validacion": 0.4656,
+  "prueba": {
+   "iou": 0.4245,
+   "f1": 0.596,
+   "precision": 0.555,
+   "recall": 0.6436
+  },
+  "particion": "oficial: entrenamiento, validación (época y umbral), prueba (una vez)"
+ },
+ "rango_entrenamiento": {
+  "B01": {
+   "min": 0.678172,
+   "max": 1.800664
+  },
+  "B02": {
+   "min": 0.602693,
+   "max": 2.523551
+  },
+  "B03": {
+   "min": 0.450697,
+   "max": 3.12172
+  },
+  "B04": {
+   "min": 0.354918,
+   "max": 4.937407
+  },
+  "pendiente": {
+   "min": 0.0,
+   "max": 3.301748
+  },
+  "elevacion": {
+   "min": 0.029761,
+   "max": 4.737126
+  }
+ },
+ "escala_terreno": {
+  "pendiente": 20.292,
+  "elevacion": 772.82
+ },
+ "terreno_entrenamiento": "ALOS PALSAR (ASF) en Landslide4Sense: B13 pendiente, B14 DEM",
+ "exportacion": {
+  "opset": 17,
+  "paridad_max_logit": 5.7220458984375e-06,
+  "pesos": {
+   "capas_conv": 46,
+   "capas_en_inicializacion": 0,
+   "fraccion": 0.0,
+   "cabeza_sin_entrenar": false,
+   "sin_entrenar": false
+  },
+  "sha256_onnx": "8d811e5c63d67b2c747dd1cf28c3248a79ef7159ef48668901f907a090319cf8"
+ },
+ "verificacion_l4s": {
+  "fecha": "2026-11-04",
+  "umbral": 0.7,
+  "dataset": "ibm-nasa-geospatial/Landslide4sense (Hugging Face)",
+  "validation": {
+   "parches": 245,
+   "iou": 0.4656,
+   "f1": 0.6353,
+   "precision": 0.6844,
+   "recall": 0.5928,
+   "iou_medio_parches_con_deslizamiento": 0.3888,
+   "tp": 40754,
+   "fp": 18790,
+   "fn": 27991,
+   "tn": 3926545
+  },
+  "test": {
+   "parches": 800,
+   "iou": 0.4245,
+   "f1": 0.596,
+   "precision": 0.555,
+   "recall": 0.6436,
+   "iou_medio_parches_con_deslizamiento": 0.3609,
+   "tp": 159312,
+   "fp": 127749,
+   "fn": 88219,
+   "tn": 12731920
+  }
+ }
+}
