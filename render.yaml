@@ -24,11 +24,31 @@ services:
         value: "1"
       - key: HILOS_ONNX
         value: "1"
+      # glibc crea una reserva de memoria por hilo y no la devuelve; con 2 el
+      # proceso ocupa bastante menos. Tiene que estar antes de que arranque Python.
+      - key: MALLOC_ARENA_MAX
+        value: "2"
+      - key: HILOS_DESCARGA
+        value: "4"
       # El alcance de la tesis: fuera de La Convención se responde 403.
       - key: AMBITO
         value: "bloquear"
+      # Lado máximo del área. Con 0.1 CPU, 8 km tardan unos 6 minutos y ocupan
+      # ~260 MB propios; 12 km pasarían los 10 minutos. En un plan con más CPU se
+      # puede subir a 12.
       - key: MAX_LADO_KM
-        value: "12"
+        value: "8"
+      - key: GDAL_CACHEMAX
+        value: "32"
+      # Relieve para B13 (pendiente) y B14 (DEM). nasadem es el SRTM que ASF
+      # distribuye como «ALOS PALSAR DEM» y que usó Landslide4Sense; se pide con
+      # cubo. Con el mosaico de ASF ya armado (herramientas/alos_palsar_asf.py):
+      # FUENTE_DEM = asf-alos-palsar y RUTA_DEM_ASF = URL del GeoTIFF.
+      # Otras: alos-aw3d30, cop-dem-glo-30.
+      - key: FUENTE_DEM
+        value: "nasadem"
+      - key: RUTA_DEM_ASF
+        value: ""
       # A 1 no baja imágenes: genera un área sintética. Para comprobar el despliegue.
       - key: MODO_FALSO
         value: "0"

@@ -6,6 +6,7 @@ como se ajusta en Render (Environment) sin tocar el código.
 """
 import json
 import os
+import tempfile
 
 
 def _env(nombre, defecto):
@@ -24,8 +25,28 @@ URL_PESOS_BASE = _env('URL_PESOS_BASE', '')
 # salvo que esto valga 1, que solo sirve para probar el circuito.
 PERMITIR_SIN_ENTRENAR = _env('PERMITIR_SIN_ENTRENAR', '0') == '1'
 HILOS_ONNX = int(_env('HILOS_ONNX', '1'))
+# Optimización del grafo: 'extendida' da los mismos resultados (diferencia < 1e-6)
+# que 'todas' y usa unos 100 MB menos, porque no duplica los pesos en el formato
+# interno NCHWc. En 512 MB eso decide si el servicio cabe o no.
+NIVEL_OPT_ONNX = _env('NIVEL_OPT_ONNX', 'extendida')
+# Hilos para bajar las imágenes. dask usa por defecto uno por núcleo de la
+# máquina, y en Render la máquina física tiene muchos aunque el plan dé 0.1 CPU:
+# cada hilo abre sus propias conexiones y cachés. Con 4 la descarga es rápida
+# (la espera es de red, no de cálculo) y la memoria queda acotada.
+HILOS_DESCARGA = int(_env('HILOS_DESCARGA', '4'))
 # En el plan gratuito de Render hay 512 MB: mejor un modelo cargado a la vez.
 UN_MODELO_A_LA_VEZ = _env('UN_MODELO_A_LA_VEZ', '1') == '1'
+# La sesión se carga recién para inferir y se suelta al terminar cada trabajo, así
+# no ocupa memoria mientras se bajan las imágenes. Con más RAM se puede poner 0.
+SOLTAR_SESION = _env('SOLTAR_SESION', '1') == '1'
+# Parches por llamada al modelo. 4 da la misma velocidad que 8 en CPU y ~20 MB menos.
+LOTE_INFERENCIA = int(_env('LOTE_INFERENCIA', '4'))
+# Al revisar cada modelo, el servidor guarda aquí una copia con los pesos en un
+# archivo aparte (.onnx.data). ONNX Runtime los lee directo del disco: unos 95 MB
+# dejan de contar como memoria propia del proceso y el resultado es idéntico.
+# Vacío para desactivarlo.
+CARPETA_COPIAS = _env('CARPETA_COPIAS', os.path.join(
+    tempfile.gettempdir(), 'modelos_pesos_aparte'))
 
 # ----------------------------------------------------------------------- CORS
 # La URL del Space, p. ej. https://usuario-espacio.hf.space. '*' para probar.
@@ -34,11 +55,38 @@ ORIGENES = [o.strip() for o in _env('ORIGENES_PERMITIDOS', '*').split(',') if o.
 # ---------------------------------------------------------- fuente de imágenes
 STAC = 'https://planetarycomputer.microsoft.com/api/stac/v1'
 COLECCION_S2 = 'sentinel-2-l2a'
-COLECCION_DEM = 'cop-dem-glo-30'
-# El DEM de Copernicus no es una serie temporal: todas sus teselas en Planetary
-# Computer llevan la fecha 2021-04-22. Pedirlo con las fechas del analista no
-# devuelve nada, así que va con una ventana propia.
-FECHAS_DEM = (_env('DEM_DESDE', '2020-01-01'), _env('DEM_HASTA', '2023-12-31'))
+# ----------------------------------------------------- relieve (B13 y B14)
+# Landslide4Sense toma la pendiente (B13) y el DEM (B14) del «ALOS PALSAR DEM» de
+# 12.5 m que distribuye ASF con los productos RTC. Ese DEM no sale de PALSAR: es
+# SRTM de 30 m remuestreado a 12.5 m (NASA Earthdata, proyecto ALOS PALSAR RTC).
+# Por eso la fuente por defecto, que cubo pide a Planetary Computer, es NASADEM
+# (SRTM reprocesado, 30 m). Otras opciones:
+#   alos-aw3d30   ALOS World 3D-30m de JAXA (óptico PRISM, misión ALOS)
+#   cop-dem-glo-30 Copernicus GLO-30
+#   asf-alos-palsar el mosaico de los .dem.tif de ASF para la provincia, armado
+#                  una vez con herramientas/alos_palsar_asf.py (archivo o URL COG)
+# Ninguna es una serie temporal: cada una va con su propia ventana de fechas.
+FUENTES_DEM = {
+    'nasadem': {'coleccion': 'nasadem', 'banda': 'elevation',
+                'fechas': ('2000-01-01', '2000-12-31'),
+                'nombre': 'NASADEM (SRTM, 30 m), la base del DEM «ALOS PALSAR» de ASF'},
+    'alos-aw3d30': {'coleccion': 'alos-dem', 'banda': 'data',
+                    'fechas': ('2016-01-01', '2016-12-31'),
+                    'nombre': 'ALOS World 3D-30m (JAXA, 30 m)'},
+    'cop-dem-glo-30': {'coleccion': 'cop-dem-glo-30', 'banda': 'data',
+                       'fechas': ('2020-01-01', '2023-12-31'),
+                       'nombre': 'Copernicus DEM GLO-30 (30 m)'},
+    'asf-alos-palsar': {'archivo': True,
+                        'nombre': 'ALOS PALSAR RTC (ASF), mosaico de la provincia'},
+}
+FUENTE_DEM = _env('FUENTE_DEM', 'nasadem')
+if FUENTE_DEM not in FUENTES_DEM:
+    raise ValueError(f'FUENTE_DEM="{FUENTE_DEM}" no es una de {sorted(FUENTES_DEM)}')
+# Para asf-alos-palsar: ruta local o URL (https://...) del GeoTIFF del mosaico.
+RUTA_DEM_ASF = _env('RUTA_DEM_ASF', '')
+# Constantes de Landslide4Sense, medidas en sus parches (son las mismas en todas
+# las regiones): pendiente = grados / 20.292 y elevación = metros / 772.82.
+ESCALA_TERRENO_L4S = {'pendiente': 20.292, 'elevacion': 772.82}
 RESOLUCION_M = 10
 # Lado de cada cubo de cubo. 256 px son 2.56 km: pocas llamadas y poca memoria.
 LADO_TESELA_PX = int(_env('LADO_TESELA_PX', '256'))

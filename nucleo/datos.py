@@ -21,6 +21,12 @@ from pyproj import Transformer
 from . import config
 
 
+def _dask_acotado():
+    """dask con un número fijo de hilos, no uno por núcleo de la máquina."""
+    import dask
+    return dask.config.set(scheduler='threads', num_workers=config.HILOS_DESCARGA)
+
+
 class DatosInvalidos(ValueError):
     pass
 
@@ -106,7 +112,8 @@ def adquirir_tesela(t, desde, hasta, bandas, nubes_max, max_escenas):
     nubes = _vec(c['eo:cloud_cover'].values).astype(float)
     orden = np.argsort(nubes)[:max_escenas]
     c = c.isel(time=np.sort(orden))
-    a = np.asarray(c.values, dtype=np.float32)               # (t, b, y, x)
+    with _dask_acotado():
+        a = np.asarray(c.values, dtype=np.float32)           # (t, b, y, x)
     if a.ndim == 3:
         a = a[None]
     nb = len(bandas)
@@ -127,36 +134,74 @@ def adquirir_tesela(t, desde, hasta, bandas, nubes_max, max_escenas):
         comp = np.nanmedian(bandas_t, axis=0)                # (b, y, x)
     n_ok = ok.sum(axis=0)
     fechas = [str(x)[:10] for x in _vec(c.time.values)]
+    ids = [str(x) for x in _vec(c['id'].values)] if 'id' in c.coords else [''] * len(fechas)
     plat = _vec(c['platform'].values) if 'platform' in c.coords else [''] * len(fechas)
     nub = _vec(c['eo:cloud_cover'].values).astype(float)
     return {'bandas': {b: comp[i] for i, b in enumerate(bandas)}, 'n_validas': n_ok,
             'x0': float(_vec(c.x.values)[0]), 'y0': float(_vec(c.y.values)[0]),
             'epsg': int(c.attrs.get('epsg', 0)),
             'escenas': [{'fecha': f, 'nubes_metadato': round(float(n), 1),
-                         'plataforma': str(p)} for f, n, p in zip(fechas, nub, plat)]}
+                         'plataforma': str(p), 'stac_id': i}
+                        for f, n, p, i in zip(fechas, nub, plat, ids)]}
+
+
+def _dem_cubo(t, fuente, lado_30):
+    import cubo
+    d = cubo.create(lat=t['lat'], lon=t['lon'], collection=fuente['coleccion'],
+                    bands=[fuente['banda']], start_date=fuente['fechas'][0],
+                    end_date=fuente['fechas'][1], edge_size=lado_30, resolution=30)
+    if d.sizes.get('time', 0) == 0:
+        raise DatosInvalidos(f'no hay modelo de elevación ({fuente["nombre"]}) para esta zona')
+    with _dask_acotado():
+        z = np.asarray(d.values, dtype=np.float32)
+    while z.ndim > 2:
+        z = np.nanmax(z, axis=0) if z.shape[0] > 1 else z[0]
+    from rasterio.transform import from_origin
+    tr = from_origin(float(_vec(d.x.values)[0]), float(_vec(d.y.values)[0]), 30, 30)
+    return z, tr, int(d.attrs.get('epsg', 0))
+
+
+def _dem_archivo(t, epsg, lado_30):
+    """Lee del mosaico de ASF la ventana de la tesela, llevada a una malla UTM de
+    30 m centrada en la tesela (la misma que arma cubo)."""
+    import rasterio
+    from rasterio.transform import from_origin
+    from rasterio.warp import Resampling, reproject
+    if not config.RUTA_DEM_ASF:
+        raise DatosInvalidos('FUENTE_DEM=asf-alos-palsar necesita RUTA_DEM_ASF')
+    a_utm = Transformer.from_crs(4326, epsg, always_xy=True)
+    cx, cy = a_utm.transform(t['lon'], t['lat'])
+    x0 = math.floor((cx - lado_30 * 15) / 30) * 30
+    y0 = math.ceil((cy + lado_30 * 15) / 30) * 30
+    tr = from_origin(x0, y0, 30, 30)
+    z = np.full((lado_30, lado_30), np.nan, np.float32)
+    ruta = config.RUTA_DEM_ASF
+    if ruta.startswith('http'):
+        ruta = '/vsicurl/' + ruta
+    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN='EMPTY_DIR'):
+        with rasterio.open(ruta) as src:
+            reproject(rasterio.band(src, 1), z, dst_transform=tr, dst_crs=f'EPSG:{epsg}',
+                      dst_nodata=np.nan, resampling=Resampling.bilinear)
+    if not np.isfinite(z).any():
+        raise DatosInvalidos('el mosaico ALOS PALSAR de ASF no cubre esta zona')
+    return z, tr, epsg
 
 
 def adquirir_terreno(t, epsg, transform_tesela, lado):
     """Elevación (m) y pendiente (°) de una tesela, calculadas a 30 m con margen
-    y llevadas a la malla de 10 m de la tesela."""
-    import cubo
+    y llevadas a la malla de 10 m de la tesela. La fuente la fija FUENTE_DEM."""
     from rasterio.warp import Resampling, reproject
     margen_m = 300
     lado_30 = int(math.ceil((lado * config.RESOLUCION_M + 2 * margen_m) / 30.0))
-    d = cubo.create(lat=t['lat'], lon=t['lon'], collection=config.COLECCION_DEM,
-                    bands=['data'], start_date=config.FECHAS_DEM[0],
-                    end_date=config.FECHAS_DEM[1], edge_size=lado_30, resolution=30)
-    if d.sizes.get('time', 0) == 0:
-        raise DatosInvalidos('no hay modelo de elevación para esta zona')
-    z = np.asarray(d.values, dtype=np.float32)
-    while z.ndim > 2:
-        z = np.nanmax(z, axis=0) if z.shape[0] > 1 else z[0]
+    fuente = config.FUENTES_DEM[config.FUENTE_DEM]
+    if fuente.get('archivo'):
+        z, src_tr, epsg_dem = _dem_archivo(t, epsg, lado_30)
+    else:
+        z, src_tr, epsg_dem = _dem_cubo(t, fuente, lado_30)
+    if epsg_dem and epsg_dem != epsg:
+        raise DatosInvalidos('el DEM y la imagen quedaron en zonas UTM distintas')
     dy, dx = np.gradient(z, 30.0, 30.0)
     pend = np.degrees(np.arctan(np.hypot(dx, dy))).astype(np.float32)
-    from rasterio.transform import from_origin
-    src_tr = from_origin(float(_vec(d.x.values)[0]), float(_vec(d.y.values)[0]), 30, 30)
-    if int(d.attrs.get('epsg', epsg)) != epsg:
-        raise DatosInvalidos('el DEM y la imagen quedaron en zonas UTM distintas')
     salida = {}
     for nombre, arr in (('elevacion', z), ('pendiente', pend)):
         dst = np.full((lado, lado), np.nan, np.float32)
@@ -187,7 +232,7 @@ def adquirir_tesela_falsa(t, desde, hasta, bandas, nubes_max, max_escenas):
             'x0': t['cx'] - T * config.RESOLUCION_M / 2,
             'y0': t['cy'] + T * config.RESOLUCION_M / 2, 'epsg': 0,
             'escenas': [{'fecha': desde, 'nubes_metadato': 0.0,
-                         'plataforma': 'sintetica'}]}
+                         'plataforma': 'sintetica', 'stac_id': 'sintetica'}]}
 
 
 def terreno_falso(t, lado):

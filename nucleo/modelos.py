@@ -11,7 +11,6 @@ Una capa entrenada se aleja de eso.
 """
 import glob
 import hashlib
-import json
 import os
 import threading
 
@@ -23,6 +22,7 @@ CABECERA_LFS = b'version https://git-lfs'
 _LOCK = threading.Lock()
 _SESIONES = {}
 _FICHAS = {}
+_RUTA_SESION = {}     # nombre -> ONNX con el que se abre la sesión
 
 
 # ------------------------------------------------------------------ archivos
@@ -93,13 +93,23 @@ def _parece_inicializacion(w):
     return bool(normal)
 
 
-def revisar_pesos(ruta_onnx):
+def _forma(valor):
+    return [d.dim_value if d.HasField('dim_value') else 'N'
+            for d in valor.type.tensor_type.shape.dim]
+
+
+def revisar_pesos(ruta_onnx, copia_aparte=None):
     """Cuántas capas conv tienen pesos indistinguibles de la inicialización
-    uniforme de PyTorch, U(-1/sqrt(fan_in), +1/sqrt(fan_in))."""
+    uniforme de PyTorch, U(-1/sqrt(fan_in), +1/sqrt(fan_in)). De paso devuelve
+    la forma de la entrada y de la salida, para no abrir una sesión solo para eso."""
     import onnx
     from onnx import numpy_helper
     m = onnx.load(ruta_onnx, load_external_data=True)
     pesos = {t.name: t for t in m.graph.initializer}
+    nombres_init = set(pesos)
+    entradas = [i for i in m.graph.input if i.name not in nombres_init]
+    forma_in = _forma(entradas[0]) if entradas else []
+    forma_out = _forma(m.graph.output[0]) if m.graph.output else []
     marcas = []                      # en el orden del grafo
     for nodo in m.graph.node:
         if nodo.op_type != 'Conv' or len(nodo.input) < 2 or nodo.input[1] not in pesos:
@@ -108,7 +118,10 @@ def revisar_pesos(ruta_onnx):
         if len(t.dims) != 4 or int(np.prod(t.dims)) < 256:
             continue
         marcas.append(_parece_inicializacion(numpy_helper.to_array(t)))
-    del m, pesos
+    del pesos
+    ruta_sesion = _guardar_pesos_aparte(m, ruta_onnx, copia_aparte) if copia_aparte else ruta_onnx
+    del m
+    liberar_memoria()
     convs, en_init = len(marcas), sum(marcas)
     frac = en_init / convs if convs else 0.0
     cabeza = any(marcas[-3:])
@@ -116,7 +129,49 @@ def revisar_pesos(ruta_onnx):
             'fraccion': round(frac, 3), 'cabeza_sin_entrenar': cabeza,
             # la cabeza es la que decide la clase: si está en la inicialización el
             # modelo no aprendió a segmentar, aunque el codificador traiga ImageNet
-            'sin_entrenar': frac >= 0.25 or cabeza}
+            'sin_entrenar': frac >= 0.25 or cabeza,
+            '_forma_entrada': forma_in, '_forma_salida': forma_out,
+            '_ruta_sesion': ruta_sesion}
+
+
+def _guardar_pesos_aparte(m, ruta_onnx, destino):
+    """Copia del ONNX con los pesos en un .onnx.data al lado. Si algo falla se usa
+    el original: es una optimización de memoria, no un requisito."""
+    import onnx
+    try:
+        if os.path.getsize(ruta_onnx) < 8 * 1024 * 1024:
+            return ruta_onnx                  # modelos chicos: no vale la pena
+        os.makedirs(destino, exist_ok=True)
+        base = os.path.splitext(os.path.basename(ruta_onnx))[0]
+        salida = os.path.join(destino, base + '.onnx')
+        datos_ext = salida + '.data'
+        # onnx agrega al final de un .data existente en vez de reemplazarlo: sin
+        # borrarlo antes, cada arranque lo haría crecer otros 90 MB
+        for viejo in (salida, datos_ext):
+            if os.path.exists(viejo):
+                os.remove(viejo)
+        esperado = sum(len(t.raw_data) for t in m.graph.initializer)
+        onnx.save_model(m, salida, save_as_external_data=True, all_tensors_to_one_file=True,
+                        location=os.path.basename(datos_ext), size_threshold=1024)
+        if os.path.getsize(datos_ext) > 1.05 * esperado + 1024 * 1024:
+            raise RuntimeError(f'la copia de pesos pesa {os.path.getsize(datos_ext)} bytes')
+        return salida
+    except Exception as e:
+        print(f'[modelos] sin copia con pesos aparte ({type(e).__name__}: {e}); '
+              'se usa el ONNX original', flush=True)
+        return ruta_onnx
+
+
+def liberar_memoria():
+    """Devuelve al sistema la memoria que Python ya soltó. Sin esto, glibc la
+    retiene y el proceso parece ocupar más de lo que usa."""
+    import gc
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL('libc.so.6').malloc_trim(0)
+    except Exception:
+        pass
 
 
 # ----------------------------------------------------------------- catálogo
@@ -150,18 +205,23 @@ def ficha(nombre):
          'verificacion_l4s': r.get('verificacion_l4s')}
     try:
         _asegurar_archivo(r['_ruta_onnx'])
-        ses = _crear_sesion(r['_ruta_onnx'])
-        e = ses.get_inputs()[0]
-        o = ses.get_outputs()[0]
-        f['entrada'] = {'forma': [d if isinstance(d, int) else 'N' for d in e.shape]}
-        f['salida_forma'] = [d if isinstance(d, int) else 'N' for d in o.shape]
-        c, h, w = e.shape[1], e.shape[2], e.shape[3]
+        # La revisión carga el ONNX entero en memoria un momento; se hace antes de
+        # cualquier sesión para que los dos picos no se sumen.
+        pesos = revisar_pesos(r['_ruta_onnx'], config.CARPETA_COPIAS or None)
+        _RUTA_SESION[nombre] = pesos.pop('_ruta_sesion')
+        forma_in = pesos.pop('_forma_entrada')
+        forma_out = pesos.pop('_forma_salida')
+        f['entrada'] = {'forma': forma_in}
+        f['salida_forma'] = forma_out
         problemas = []
-        if c != len(r['canales']):
-            problemas.append(f'el ONNX pide {c} canales y la receta da {len(r["canales"])}')
-        if (h, w) != (r['lado_px'], r['lado_px']):
-            problemas.append(f'el ONNX pide {h}x{w} y la receta dice {r["lado_px"]}')
-        pesos = revisar_pesos(r['_ruta_onnx'])
+        if len(forma_in) != 4:
+            problemas.append(f'el ONNX tiene una entrada de forma {forma_in}; se esperaba N×C×H×W')
+        else:
+            c, h, w = forma_in[1], forma_in[2], forma_in[3]
+            if c != len(r['canales']):
+                problemas.append(f'el ONNX pide {c} canales y la receta da {len(r["canales"])}')
+            if (h, w) != (r['lado_px'], r['lado_px']):
+                problemas.append(f'el ONNX pide {h}x{w} y la receta dice {r["lado_px"]}')
         f['pesos'] = pesos
         f['sha256'] = sha256(r['_ruta_onnx'])
         if pesos['sin_entrenar']:
@@ -174,7 +234,6 @@ def ficha(nombre):
             f['detalle'] = '; '.join(problemas)
         else:
             f['estado'] = 'listo'
-        del ses
     except Exception as e:
         f['estado'] = 'error'
         f['detalle'] = f'{type(e).__name__}: {e}'
@@ -188,11 +247,17 @@ def _crear_sesion(ruta):
     so.intra_op_num_threads = config.HILOS_ONNX
     so.inter_op_num_threads = 1
     so.enable_cpu_mem_arena = False
+    so.graph_optimization_level = {
+        'basica': ort.GraphOptimizationLevel.ORT_ENABLE_BASIC,
+        'extendida': ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+        'todas': ort.GraphOptimizationLevel.ORT_ENABLE_ALL,
+    }.get(config.NIVEL_OPT_ONNX, ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED)
     return ort.InferenceSession(ruta, so, providers=['CPUExecutionProvider'])
 
 
-def obtener(nombre):
-    """(sesión, receta) lista para inferir, o una excepción que explica por qué no."""
+def receta_lista(nombre):
+    """La receta de un modelo que puede usarse, sin cargar la sesión; o una
+    excepción que explica por qué no. Sirve para rechazar antes de bajar imágenes."""
     cat = catalogo()
     if nombre not in cat:
         raise KeyError(f'modelo "{nombre}" no existe. Disponibles: {sorted(cat)}')
@@ -201,12 +266,31 @@ def obtener(nombre):
         raise PermissionError(f['detalle'])
     if f['estado'] == 'error':
         raise RuntimeError(f['detalle'])
+    return cat[nombre]
+
+
+def obtener(nombre):
+    """(sesión, receta) lista para inferir, o una excepción que explica por qué no."""
+    receta = receta_lista(nombre)
     with _LOCK:
         if nombre not in _SESIONES:
-            if config.UN_MODELO_A_LA_VEZ:
+            if config.UN_MODELO_A_LA_VEZ and _SESIONES:
                 _SESIONES.clear()
-            _SESIONES[nombre] = _crear_sesion(cat[nombre]['_ruta_onnx'])
-        return _SESIONES[nombre], cat[nombre]
+                liberar_memoria()
+            _SESIONES[nombre] = _crear_sesion(_RUTA_SESION.get(nombre, receta['_ruta_onnx']))
+        return _SESIONES[nombre], receta
+
+
+def soltar(nombre=None):
+    """Descarga la sesión (o todas) para que la memoria quede libre entre trabajos.
+    Volver a crearla cuesta menos de un segundo; tenerla cargada mientras se bajan
+    las imágenes cuesta más de 100 MB en un plan de 512."""
+    with _LOCK:
+        if nombre is None:
+            _SESIONES.clear()
+        else:
+            _SESIONES.pop(nombre, None)
+    liberar_memoria()
 
 
 def cargados():

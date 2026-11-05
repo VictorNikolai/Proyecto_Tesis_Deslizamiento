@@ -52,7 +52,9 @@ def raiz():
     return {'servicio': 'detección de deslizamientos, La Convención', 'version': app.version,
             'modelos': sorted(modelos.catalogo()), 'modo_falso': config.MODO_FALSO,
             'max_lado_km': config.MAX_LADO_KM, 'aviso_lado_km': config.AVISO_LADO_KM,
-            'ambito': ambito.descripcion()}
+            'ambito': ambito.descripcion(),
+            'relieve': {'fuente': config.FUENTE_DEM,
+                        'descripcion': config.FUENTES_DEM[config.FUENTE_DEM]['nombre']}}
 
 
 @app.get('/salud')

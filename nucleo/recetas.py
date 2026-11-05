@@ -25,6 +25,10 @@ IDX_L4S = {'B01': 0, 'B02': 1, 'B03': 2, 'B04': 3, 'B05': 4, 'B06': 5, 'B07': 6,
            'B08': 7, 'B09': 8, 'B10': 9, 'B11': 10, 'B12': 11,
            'pendiente': 12, 'elevacion': 13}
 INDICES = {'NDVI': ('B08', 'B04'), 'NDWI': ('B03', 'B08')}
+# Nombres de Landslide4Sense para los canales de relieve: B13 = pendiente y
+# B14 = DEM. Una receta puede usar cualquiera de los dos nombres.
+ALIAS = {'B13': 'pendiente', 'B14': 'elevacion', 'B1': 'B01', 'B2': 'B02', 'B3': 'B03',
+         'B4': 'B04', 'B5': 'B05', 'B6': 'B06', 'B7': 'B07', 'B8': 'B08', 'B9': 'B09'}
 TERRENO = ('pendiente', 'elevacion')
 SALIDAS = ('sigmoide', 'softmax')
 
@@ -33,9 +37,26 @@ class RecetaInvalida(ValueError):
     pass
 
 
+def normalizar_nombres(r):
+    """B13 -> pendiente, B14 -> elevacion, B1 -> B01... en canales y constantes."""
+    al = lambda c: ALIAS.get(c, c)
+    r['canales'] = [al(c) for c in r['canales']]
+    n = r.get('normalizacion', {})
+    if 'canales' in n:
+        n['canales'] = [al(c) for c in n['canales']]
+    if 'por_canal' in n:
+        n['por_canal'] = {al(c): v for c, v in n['por_canal'].items()}
+    if 'escala_terreno' in r:
+        r['escala_terreno'] = {al(c): v for c, v in r['escala_terreno'].items()}
+    if 'rango_entrenamiento' in r:
+        r['rango_entrenamiento'] = {al(c): v for c, v in r['rango_entrenamiento'].items()}
+    return r
+
+
 def leer(ruta_json):
     with open(ruta_json, encoding='utf-8') as f:
         r = json.load(f)
+    normalizar_nombres(r)
     validar(r, os.path.basename(ruta_json))
     return r
 
@@ -57,11 +78,9 @@ def validar(r, origen='receta'):
         for c in n.get('canales', []):
             if c not in n.get('por_canal', {}):
                 raise RecetaInvalida(f'{origen}: faltan las constantes de "{c}"')
-    for c in r['canales']:
-        if c in TERRENO and not r.get('escala_terreno', {}).get(c):
-            raise RecetaInvalida(
-                f'{origen}: el canal "{c}" necesita su constante en escala_terreno, '
-                'porque Landslide4Sense no lo trae en metros ni en grados')
+    for c, k in r.get('escala_terreno', {}).items():
+        if c not in TERRENO or not float(k) > 0:
+            raise RecetaInvalida(f'{origen}: escala_terreno["{c}"] no es válida')
     if not 0 < float(r['umbral']) < 1:
         raise RecetaInvalida(f'{origen}: el umbral tiene que estar entre 0 y 1')
 
@@ -141,10 +160,11 @@ def desde_l2a(bandas_dn, terreno, valido, r, escala=None):
         if b not in escala:
             raise RecetaInvalida(f'no hay constante de escala para {b}')
         fuente[b] = x.astype(np.float32) / float(escala[b])
+    # pendiente en grados y elevación en metros, a unidades de Landslide4Sense;
+    # si la receta no trae sus constantes valen las de Landslide4Sense
+    k_terreno = dict(config.ESCALA_TERRENO_L4S, **r.get('escala_terreno', {}))
     for c, x in (terreno or {}).items():
-        k = r.get('escala_terreno', {}).get(c)
-        if k:
-            fuente[c] = x.astype(np.float32) / float(k)
+        fuente[c] = x.astype(np.float32) / float(k_terreno[c])
     return armar(fuente, valido, r)
 
 

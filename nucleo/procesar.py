@@ -74,6 +74,35 @@ def validar(p):
     return p
 
 
+def _relieve(receta):
+    """De dónde salieron B13 y B14 y cómo se llevaron a unidades de L4S."""
+    f = config.FUENTES_DEM[config.FUENTE_DEM]
+    k = dict(config.ESCALA_TERRENO_L4S, **receta.get('escala_terreno', {}))
+    return {'fuente': config.FUENTE_DEM, 'descripcion': f['nombre'],
+            'adquisicion': 'mosaico de ASF' if f.get('archivo') else 'cubo, Planetary Computer',
+            'coleccion': f.get('coleccion'), 'calculo_m': 30,
+            'B13_pendiente': f'grados / {k["pendiente"]}',
+            'B14_elevacion': f'metros / {k["elevacion"]}'}
+
+
+def _fuera_de_rango(receta, mos, ventana):
+    """Qué fracción del área tiene pendiente o elevación fuera del rango que vio el
+    modelo al entrenar (percentiles 0.1 a 99.9 de Landslide4Sense)."""
+    rango = receta.get('rango_entrenamiento') or {}
+    k = dict(config.ESCALA_TERRENO_L4S, **receta.get('escala_terreno', {}))
+    v = datos.recortar(mos['valido'], ventana)
+    out = {}
+    for c in ('elevacion', 'pendiente'):
+        if c not in rango or c not in mos['terreno']:
+            continue
+        x = datos.recortar(mos['terreno'][c], ventana)[v] / float(k[c])
+        if x.size:
+            unidad = float(k[c])
+            out[c] = {'fraccion': round(float(np.mean((x < rango[c]['min']) | (x > rango[c]['max']))), 4),
+                      'rango': [round(rango[c]['min'] * unidad), round(rango[c]['max'] * unidad)]}
+    return out or None
+
+
 def procesar(p, avance=lambda f, t: None):
     t0 = time.time()
     p = validar(p)
@@ -82,18 +111,14 @@ def procesar(p, avance=lambda f, t: None):
     def tramo(a, b):
         return lambda f, t: avance(a + (b - a) * f, t)
 
-    avance(0.01, 'Cargando el modelo')
+    avance(0.01, 'Revisando el modelo')
     try:
-        sesion, receta = modelos.obtener(p['modelo'])
+        receta = modelos.receta_lista(p['modelo'])
     except PermissionError as e:
         raise ErrorConCodigo(409, str(e))
     except Exception as e:
         raise ErrorConCodigo(503, f'no se pudo cargar el modelo: {type(e).__name__}: {e}')
     lado = int(receta['lado_px'])
-    forma = sesion.get_inputs()[0].shape
-    if forma[1] != len(receta['canales']) or forma[2] != lado or forma[3] != lado:
-        raise ErrorConCodigo(500, f'el ONNX pide {forma[1:]} y la receta dice '
-                                  f'{len(receta["canales"])}x{lado}x{lado}')
 
     plan = datos.planificar(bbox, lado_min=lado)
     bandas = sorted(set(recetas.bandas_s2(receta)) | {'B02', 'B03', 'B04'})
@@ -117,13 +142,27 @@ def procesar(p, avance=lambda f, t: None):
                                   f'(se exige {cob_min*100:.0f} %). Amplía las fechas o '
                                   'sube la nubosidad máxima.')
 
+    fuera_rango = _fuera_de_rango(receta, mos, plan['ventana']) if con_terreno else None
     avance(0.63, 'Armando los canales del modelo')
     entrada = {b: mos['bandas'][b] for b in recetas.bandas_s2(receta)}
     tensor = recetas.desde_l2a(entrada, mos['terreno'] if recetas.necesita_dem(receta) else {},
                                mos['valido'], receta)
-    prob, n_parches = inferencia.predecir(tensor, mos['valido'], sesion, receta,
-                                          avance=tramo(0.65, 0.9))
-    del tensor
+    # lo que dejó la descarga (búferes de red y de GDAL) se devuelve antes de
+    # cargar el modelo, que es el otro pico de memoria
+    modelos.liberar_memoria()
+    avance(0.64, 'Cargando el modelo')
+    try:
+        sesion, receta = modelos.obtener(p['modelo'])
+    except Exception as e:
+        raise ErrorConCodigo(503, f'no se pudo cargar el modelo: {type(e).__name__}: {e}')
+    try:
+        prob, n_parches = inferencia.predecir(tensor, mos['valido'], sesion, receta,
+                                              avance=tramo(0.65, 0.9),
+                                              lote=config.LOTE_INFERENCIA)
+    finally:
+        del sesion, tensor
+        if config.SOLTAR_SESION:
+            modelos.soltar(p['modelo'])
 
     avance(0.91, 'Máscara y capas para el mapa')
     f, c, h, w = plan['ventana']
@@ -158,6 +197,8 @@ def procesar(p, avance=lambda f, t: None):
                         'composicion': 'mediana de las escenas menos nubosas',
                         'escala_l4s': receta.get('escala_bandas') or config.ESCALA_L4S,
                         'modo_falso': config.MODO_FALSO},
+        'relieve': _relieve(receta) if con_terreno else None,
+        'fuera_de_rango': fuera_rango,
         'escenas': mos['escenas'], 'teselas': mos['teselas'],
         'cobertura_sin_nubes': round(cobertura, 4), 'resultado': est,
         'ambito': p['_ambito'],
@@ -183,6 +224,8 @@ def procesar(p, avance=lambda f, t: None):
         'teselas': mos['teselas'], 'parches': n_parches,
         'cobertura': round(cobertura, 4), 'relleno': plan['relleno'],
         'canales': receta['canales'], 'ambito': p['_ambito'],
+        'relieve': _relieve(receta) if con_terreno else None,
+        'fuera_de_rango': fuera_rango,
         'segundos': round(time.time() - t0, 1), 'modo_falso': config.MODO_FALSO,
     }
     return resultado, {'zip': (zipb, 'application/zip')}

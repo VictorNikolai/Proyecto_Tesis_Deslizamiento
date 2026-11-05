@@ -64,6 +64,8 @@ def _trabajador(funcion):
             t.update(estado='error', codigo=500, error=f'{type(e).__name__}: {e}')
         t['actualizado'] = time.time()
         t['segundos'] = round(time.time() - t['inicio'], 1)
+        from .modelos import liberar_memoria
+        liberar_memoria()
         _cola.task_done()
 
 
