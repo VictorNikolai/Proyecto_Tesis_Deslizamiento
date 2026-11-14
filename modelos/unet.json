@@ -55,19 +55,20 @@
   "nota": "constantes en unidades de Landslide4Sense; los índices NDVI y NDWI se calculan sobre esas unidades y no se normalizan"
  },
  "salida": "sigmoide",
- "umbral": 0.7,
+ "umbral": 0.45,
+ "indices_internos": "GRVI y ExG de B03, B04 y B02, calculados dentro del ONNX",
  "entrenamiento": {
-  "firma": "c4a0d3781a67",
+  "firma": "b2809be440d6",
   "arquitectura": "unet",
   "codificador": "resnet34",
   "dataset": "Landslide4Sense (ibm-nasa-geospatial/Landslide4sense, conjuntos oficiales)",
-  "epoca": 16,
-  "iou_validacion": 0.4656,
+  "epoca": 51,
+  "iou_validacion": 0.4983,
   "prueba": {
-   "iou": 0.4245,
-   "f1": 0.596,
-   "precision": 0.555,
-   "recall": 0.6436
+   "iou": 0.4602,
+   "f1": 0.6303,
+   "precision": 0.5906,
+   "recall": 0.6757
   },
   "particion": "oficial: entrenamiento, validación (época y umbral), prueba (una vez)"
  },
@@ -104,7 +105,7 @@
  "terreno_entrenamiento": "ALOS PALSAR (ASF) en Landslide4Sense: B13 pendiente, B14 DEM",
  "exportacion": {
   "opset": 17,
-  "paridad_max_logit": 5.7220458984375e-06,
+  "paridad_max_logit": 1.33514404296875e-05,
   "pesos": {
    "capas_conv": 46,
    "capas_en_inicializacion": 0,
@@ -112,35 +113,35 @@
    "cabeza_sin_entrenar": false,
    "sin_entrenar": false
   },
-  "sha256_onnx": "8d811e5c63d67b2c747dd1cf28c3248a79ef7159ef48668901f907a090319cf8"
+  "sha256_onnx": "8d955f2a7d071780d6261252cf93a93577d6ef815b7401ca2ae5a5e6df969714"
  },
  "verificacion_l4s": {
-  "fecha": "2026-11-04",
-  "umbral": 0.7,
+  "fecha": "2026-11-13",
+  "umbral": 0.45,
   "dataset": "ibm-nasa-geospatial/Landslide4sense (Hugging Face)",
   "validation": {
    "parches": 245,
-   "iou": 0.4656,
-   "f1": 0.6353,
-   "precision": 0.6844,
-   "recall": 0.5928,
-   "iou_medio_parches_con_deslizamiento": 0.3888,
-   "tp": 40754,
-   "fp": 18790,
-   "fn": 27991,
-   "tn": 3926545
+   "iou": 0.4983,
+   "f1": 0.6651,
+   "precision": 0.7039,
+   "recall": 0.6304,
+   "iou_medio_parches_con_deslizamiento": 0.438,
+   "tp": 43336,
+   "fp": 18230,
+   "fn": 25409,
+   "tn": 3927105
   },
   "test": {
    "parches": 800,
-   "iou": 0.4245,
-   "f1": 0.596,
-   "precision": 0.555,
-   "recall": 0.6436,
-   "iou_medio_parches_con_deslizamiento": 0.3609,
-   "tp": 159312,
-   "fp": 127749,
-   "fn": 88219,
-   "tn": 12731920
+   "iou": 0.4602,
+   "f1": 0.6303,
+   "precision": 0.5906,
+   "recall": 0.6757,
+   "iou_medio_parches_con_deslizamiento": 0.3909,
+   "tp": 167246,
+   "fp": 115917,
+   "fn": 80285,
+   "tn": 12743752
   }
  }
 }
