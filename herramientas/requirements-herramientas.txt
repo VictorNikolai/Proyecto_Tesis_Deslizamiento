@@ -1,0 +1,4 @@
+# Lo que piden las herramientas además de requirements.txt del servidor.
+# Probado con Python 3.12.
+scipy==1.18.1
+python-multipart==0.0.32
